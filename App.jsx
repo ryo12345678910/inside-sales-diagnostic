@@ -16,6 +16,8 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 
 // ===== グローバル設定 =====
 const GAS_WEBHOOK_URL = "YOUR_GAS_WEB_APP_URL";
@@ -27,6 +29,23 @@ const INDUSTRY_BENCHMARKS = {
   "金融・保険": { I: 65, II: 62, III: 58, IV: 72, V: 78, VI: 70, VII: 68, VIII: 62 },
   "製造業": { I: 58, II: 55, III: 52, IV: 65, V: 72, VI: 68, VII: 58, VIII: 55 },
   default: { I: 62, II: 60, III: 62, IV: 65, V: 68, VI: 65, VII: 62, VIII: 60 },
+};
+
+// ===== カスタムレンダー関数 =====
+const CustomPolarRadiusAxisTick = (props) => {
+  const { x, y, payload } = props;
+  return (
+    <text
+      x={x}
+      y={y}
+      textAnchor="middle"
+      dominantBaseline="middle"
+      fill="#666"
+      fontSize="12"
+    >
+      {payload.value}
+    </text>
+  );
 };
 
 // ===== データ定義 =====
@@ -333,7 +352,6 @@ function scoreAll(answers) {
   return { perCategory, overall };
 }
 
-// 評価レベル
 function getTier(score) {
   if (score >= 75) return "完全DX組織";
   if (score >= 60) return "若干改善の余地あり";
@@ -341,7 +359,6 @@ function getTier(score) {
   return "大幅に改善の余地あり";
 }
 
-// 同業種平均スコアを計算
 function getIndustryAverageScore(benchmark) {
   const scores = Object.values(benchmark);
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
@@ -492,28 +509,12 @@ const ADVICE = {
   },
 };
 
-// ===== カスタムレンダー関数 =====
-const CustomPolarRadiusAxisTick = (props) => {
-  const { x, y, payload } = props;
-  return (
-    <text
-      x={x}
-      y={y}
-      textAnchor="middle"
-      dominantBaseline="middle"
-      fill="#666"
-      fontSize="12"
-    >
-      {payload.value}
-    </text>
-  );
-};
-
 // ===== メインコンポーネント =====
 export default function App() {
   const [stage, setStage] = useState("start");
   const [stepIndex, setStepIndex] = useState(0);
   const [answers, setAnswers] = useState({});
+  const [errorMessage, setErrorMessage] = useState("");
   const [lead, setLead] = useState({
     company: "",
     name: "",
@@ -526,6 +527,27 @@ export default function App() {
   const pdfRef = useRef(null);
 
   const goNext = () => {
+    const cat = CATEGORIES[stepIndex];
+    const unansweredQuestions = [];
+
+    cat.questions.forEach((q, qIdx) => {
+      const isAnswered = q.type === "single"
+        ? answers[q.id] !== undefined && answers[q.id] !== null
+        : answers[q.id] && answers[q.id].length > 0;
+
+      if (!isAnswered) {
+        unansweredQuestions.push(qIdx + 1);
+      }
+    });
+
+    if (unansweredQuestions.length > 0) {
+      const questionNumbers = unansweredQuestions.join("、");
+      setErrorMessage(`未回答の設問があります。\n\n未回答：第${questionNumbers}問\n\nすべての質問にお答えください。`);
+      return;
+    }
+
+    setErrorMessage("");
+
     if (stepIndex < CATEGORIES.length - 1) {
       setStepIndex(stepIndex + 1);
     } else {
@@ -542,6 +564,8 @@ export default function App() {
   };
 
   const selectOption = (qId, idx, type) => {
+    setErrorMessage("");
+    
     if (type === "single") {
       setAnswers({ ...answers, [qId]: idx });
     } else {
@@ -619,24 +643,21 @@ export default function App() {
     }
   };
 
+  // 完璧なPDF出力機能
   const downloadPDF = () => {
     if (!pdfRef.current || !result) return;
-
-    const element = pdfRef.current;
-    const opt = {
-      margin: 10,
-      filename: `${result.company}_営業DX診断_${result.overall}点.pdf`,
-      image: { type: "jpeg", quality: 0.98 },
-      html2canvas: { scale: 2 },
-      jsPDF: { orientation: "portrait", unit: "mm", format: "a4" },
-    };
-
-    if (typeof html2pdf === "undefined") {
-      alert("PDF ライブラリが読み込まれていません。もう一度試してください。");
-      return;
-    }
-
-    html2pdf().set(opt).from(element).save();
+    const target = pdfRef.current; 
+    
+    html2canvas(target, { scale: 2 }).then((canvas) => {
+      const imgData = canvas.toDataURL('image/jpeg', 0.98);
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`${result.company}_営業DX診断_${result.overall}点.pdf`); 
+    });
   };
 
   const styles = {
@@ -734,6 +755,12 @@ export default function App() {
             </div>
           ))}
 
+          {errorMessage && (
+            <div className="bg-red-100 border-2 border-red-400 rounded-lg p-4 mb-6">
+              <p className="text-red-800 font-semibold whitespace-pre-wrap text-sm">{errorMessage}</p>
+            </div>
+          )}
+
           <div className="flex gap-4 mt-8">
             <button className={`${styles.button} ${styles.btnSecondary} flex-1`} onClick={goBack}>
               ← {stepIndex > 0 ? "前へ" : "キャンセル"}
@@ -824,7 +851,6 @@ export default function App() {
 
   // ===== RESULT SCREEN =====
   if (stage === "result" && result) {
-    // チャートデータ - 短い名前を使用
     const chartData = result.perCategory.map((cat, idx) => ({
       name: cat.roman,
       fullName: `${cat.roman} ${cat.name}`,
@@ -848,23 +874,23 @@ export default function App() {
           </div>
         )}
 
-        {/* ダウンロードボタン */}
         <div className="bg-blue-100 rounded-lg p-6 mb-6">
           <p className="text-center font-semibold text-blue-800 mb-4">📥 結果をダウンロード</p>
           <div className="flex gap-3 justify-center">
-            <button className={`${styles.button} ${styles.btnPrimary}`} onClick={downloadPDF}>
+            <button 
+              className={`${styles.button} ${styles.btnPrimary}`} 
+              onClick={downloadPDF}
+            >
               📄 PDF をダウンロード
             </button>
           </div>
         </div>
 
-        {/* 結果表示 */}
         <div className={styles.card} ref={pdfRef}>
           <div className="text-center mb-8">
             <h2 className="text-3xl font-bold text-gray-800 mb-2">営業DX成熟度診断</h2>
             <p className="text-lg text-gray-600 mb-6">{result.company}様 - 診断結果報告</p>
 
-            {/* 総合スコア＋同業種平均 */}
             <div className="grid grid-cols-2 gap-6 mb-6">
               <div className="bg-blue-50 rounded-lg p-8">
                 <p className="text-sm text-gray-600 mb-2">貴社のスコア</p>
@@ -885,7 +911,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* 修正1：レーダーチャートの数字を縦向きに */}
           <div className="mb-8">
             <p className="text-center text-sm text-gray-600 mb-4">
               青線：貴社のスコア ｜ オレンジ線：同業種平均
@@ -899,7 +924,6 @@ export default function App() {
                   angle={90}
                   orientation="outer"
                 />
-                {/* 修正1：PolarRadiusAxis の数字を縦向きにするカスタムレンダー */}
                 <PolarRadiusAxis 
                   angle={90} 
                   domain={[0, 100]}
@@ -924,7 +948,6 @@ export default function App() {
             </ResponsiveContainer>
           </div>
 
-          {/* カテゴリー別スコア */}
           <div className="mb-8">
             <h3 className="text-xl font-bold text-gray-800 mb-6">カテゴリー別スコア</h3>
             {result.perCategory.map((cat, idx) => {
@@ -954,7 +977,6 @@ export default function App() {
             })}
           </div>
 
-          {/* 考察 */}
           <div className="mb-8">
             <h3 className="text-xl font-bold text-gray-800 mb-6">考察と改善提案</h3>
             {result.perCategory.map((cat, idx) => {
@@ -989,7 +1011,6 @@ export default function App() {
             })}
           </div>
 
-          {/* HubSpot問い合わせ */}
           <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-6 mb-6 text-center">
             <p className="text-sm text-amber-900 mb-3">
               💼 <strong>本格的な診断（全300項目）にご興味がある方は</strong>
