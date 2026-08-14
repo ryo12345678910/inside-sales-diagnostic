@@ -643,17 +643,23 @@ export default function App() {
     }
   };
 
-  // 完璧なPDF出力機能
+  // ★修正箇所：特注サイズのPDFで下まで全部出力する機能
   const downloadPDF = () => {
     if (!pdfRef.current || !result) return;
     const target = pdfRef.current; 
     
-    html2canvas(target, { scale: 2 }).then((canvas) => {
+    html2canvas(target, { 
+      scale: 2, 
+      useCORS: true,
+      scrollY: -window.scrollY // スクロールによる見切れを防止
+    }).then((canvas) => {
       const imgData = canvas.toDataURL('image/jpeg', 0.98);
-      const pdf = new jsPDF('p', 'mm', 'a4');
       
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      const pdfWidth = 210; // 横幅はA4サイズ(210mm)を維持
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width; // 画像の比率に合わせて縦幅を計算
+      
+      // A4ではなく「pdfWidth × pdfHeight」の特注サイズPDFを作成
+      const pdf = new jsPDF('p', 'mm', [pdfWidth, pdfHeight]);
       
       pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(`${result.company}_営業DX診断_${result.overall}点.pdf`); 
